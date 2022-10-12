@@ -1,7 +1,9 @@
-from OpenGL import GL
 from game_common import (
         interfaces)
-from game_common.twodee.geometry import calculate
+from game_common.twodee.geometry import (
+    calculate,
+    intersect)
+from OpenGL import (GL, GLUT)
 import zope.interface
 
 
@@ -11,7 +13,10 @@ class Board:
         self.piano = pieces_by_type['piano'][0]
         self.blanks = pieces_by_type['blank']
         self.pieces = []
+        self.moves_by_piece = None
         for piece_type, pieces_for_type in pieces_by_type.items():
+            for piece in pieces_for_type:
+                piece.set_board(self)
             if piece_type == 'blank':
                 continue
             self.pieces.extend(pieces_for_type)
@@ -21,6 +26,20 @@ class Board:
             key: [x.copy() for x in value] 
             for (key, value) in self.pieces_by_type.items()}
         return Board(pieces_by_type)
+
+    def finish_move(self):
+        self.moves_by_piece = None
+
+    def update_blanks_from_move(self, move):
+        (_,
+         _,
+         displaced_blanks,
+         new_blank_cells,
+         _) = move
+        for blank_index in range(len(displaced_blanks)):
+            blank = displaced_blanks[blank_index]
+            blank.row, blank.column = new_blank_cells[blank_index]
+            blank.update_position_from_grid()
 
     @classmethod
     def from_initial_state(cls):
@@ -43,25 +62,44 @@ class Board:
             'bench': [bench],
             'blank': blanks}
         return Board(pieces_by_type)
-        
+
+    def select_game_piece(self, x, y, piece_type='pieces'):
+        if piece_type == 'pieces':
+            pieces = self.pieces
+        elif piece_type == 'blanks':
+            pieces = self.blanks
+        for piece in pieces:
+            if intersect.point_in_rectangle(
+                    (x, y),
+                    piece.get_display_vertices()):
+                return piece
+
+    def find_moves(self):
+        if self.moves_by_piece is None:
+            blank_cells = [
+                (blank.row, blank.column) 
+                for blank in self.blanks]
+            moves_by_piece = self.moves_by_piece = {}
+            for piece in self.pieces:
+                moves_for_piece = piece.find_moves(self.blanks, blank_cells)
+                if moves_for_piece:
+                    moves_by_piece[piece] = moves_for_piece
+        return self.moves_by_piece
 
     def update_pieces_from_board(self, board):
+        self.moves_by_piece = None
         for piece_type, pieces in self.pieces_by_type.items():
             for piece_index in range(len(pieces)):
                 pieces[piece_index].update_from_piece(
                     board.pieces_by_type[piece_type][piece_index])
 
     def update_pieces_from_state(self, state):
+        self.moves_by_piece = None
         for piece_type, pieces in self.pieces_by_type.items():
             state_pieces_for_type = state.pieces_by_type[piece_type]
             for piece_index in range(len(pieces)):
                 piece = pieces[piece_index]
-                try:
-                    piece.row, piece.column = state_pieces_for_type[piece_index]
-                except Exception as e:
-                    breakpoint()
-                    print()
-                    raise
+                piece.row, piece.column = state_pieces_for_type[piece_index]
 
 
 @zope.interface.implementer(interfaces.Renderable)
@@ -77,6 +115,7 @@ class BoardPiece:
         self.height = height
         self.width = width
         self.piece_type = piece_type
+        self.board = None
         if piece_type == 'piano':
             self.symbol = 'P'
         elif piece_type == 'bench':
@@ -96,9 +135,13 @@ class BoardPiece:
             width=self.width,
             piece_type=self.piece_type)
 
+    def set_board(self, board):
+        self.board = board
+
     def update_from_piece(self, piece):
         self.column = piece.column
         self.row = piece.row
+        self.board.finish_move()
 
     def check_up(self, blanks, blank_cells):
         if self.row - 1 < 0:
@@ -204,9 +247,7 @@ class BoardPiece:
     def init_renderable(self):
         self.renderable_height = self.height * self.cell_height
         self.renderable_width = self.width * self.cell_width
-        x = self.column * self.cell_width + (self.renderable_width / 2)
-        y = self.board_height - (self.row * self.cell_height + (self.renderable_height / 2))
-        self.position = (x, y)
+        self.update_position_from_grid()
         if self.piece_type == 'piano':
             self.color = (1, 0, 0)
         elif self.piece_type == 'bench':
@@ -233,24 +274,34 @@ class BoardPiece:
     def update(self, timeElapsed):
         pass
 
+    def update_position_from_grid(self):
+        x = self.column * self.cell_width + (self.renderable_width / 2)
+        y = self.board_height - (self.row * self.cell_height + (self.renderable_height / 2))
+        self.position = (x, y)
+
     def start_animation(
             self,
             move,
             visual_move,
             animate_start,
             animate_end,
-            transition_time):
+            transition_time,
+            move_data):
         self.move = move
         self.visual_move = visual_move
         self.animation_start_position = self.position
         self.animate_start = animate_start
         self.animate_end = animate_end
         self.transition_time = transition_time
+        self.move_data = move_data
 
     def end_animation(self):
         self.row += self.move[0]
         self.column += self.move[1]
+        self.board.update_blanks_from_move(self.move_data)
+        self.board.finish_move()
         self.animation_start_position = None
+        self.move = None
         self.visual_move = None
         self.animate_start = None
         self.animate_end = None
@@ -268,29 +319,42 @@ class BoardPiece:
             offset)
         self.position = new_position
 
+    def get_display_dimensions(self):
+        half_width = .5 * (self.getWidth() - (self.border * 2))
+        half_height = .5 * (self.getLength() - (self.border * 2))
+        return (half_width, half_height)
+
+    def get_display_vertices(self, x=None, y=None):
+        pos_x, pos_y = self.getPosition()
+        if x is None:
+            x = pos_x
+        if y is None:
+            y = pos_y
+        
+        half_width, half_height = self.get_display_dimensions()
+        return (
+            (x - half_width, y + half_height),
+            (x + half_width, y + half_height),
+            (x + half_width, y - half_height),
+            (x - half_width, y - half_height))
+
 
     def draw(self):
         x, y = self.getPosition()
-        half_width = .5 * (self.getWidth() - (self.border * 2))
-        half_height = .5 * (self.getLength() - (self.border * 2))
+        # get vertices in local coordinates system
+        display_vertices = self.get_display_vertices(x=0, y=0)
+        
         color = self.color
         GL.glPushMatrix()
         GL.glTranslate(x, y, 0)
         GL.glColor3f(*color)
         GL.glBegin(GL.GL_POLYGON)
 
-        GL.glVertex2f(-half_width, half_height)
-        GL.glVertex2f((half_width - 1), half_height)
-        GL.glVertex2f((half_width - 1), (-half_height + 1))
-        GL.glVertex2f(-half_width, (-half_height + 1))
+        for vertex in display_vertices:
+            GL.glVertex2f(*vertex)
 
         GL.glEnd()
         GL.glPopMatrix()
-
-
-
-
-
 
 def create_piano(row, column):
     return BoardPiece(row, column, height=2, width=2, piece_type='piano')
@@ -338,12 +402,7 @@ class BoardState:
                 self.pieces_by_type[piece_type].append((piece.row, piece.column))
                 for column_offset in range(piece.width):
                     for row_offset in range(piece.height):
-                        try:
-                            self.rows[piece.row + row_offset][piece.column + column_offset] = piece.symbol
-                        except Exception as e:
-                            breakpoint()
-                            print()
-                            raise
+                        self.rows[piece.row + row_offset][piece.column + column_offset] = piece.symbol
 
     def print_self(self):
         for row in self.rows:
@@ -383,13 +442,14 @@ class Traversal:
         self.state_queue = [self.starting_state]
         self.current_state = None
 
-    def get_all_winning_paths(self):
-        winning_states = self.discover_all_winning_states()
+    def get_all_winning_paths(self, starting_state=None):
+        if starting_state is None:
+            starting_state = self.starting_state
         paths = []
-        for winning_state in winning_states:
+        for winning_state in self.winning_states:
             current_state = winning_state
             path = [(current_state, None)]
-            while current_state != self.starting_state:
+            while current_state != starting_state:
                 next_state = None
                 backward_move = None
                 adjacent_states = current_state.adjacent_states
@@ -424,15 +484,8 @@ class Traversal:
                 self.current_state.print_self()
                 continue
 
-            blank_cells = [
-                (blank.row, blank.column) 
-                for blank in self.next_board.blanks]
-            moves_by_piece = []
-            for piece in self.next_board.pieces:
-                moves = piece.find_moves(self.next_board.blanks, blank_cells)
-                if moves:
-                    moves_by_piece.append((piece, moves))
-            for (piece, moves_for_piece) in moves_by_piece:
+            moves_by_piece = self.next_board.find_moves()
+            for (piece, moves_for_piece) in moves_by_piece.items():
                 for move in moves_for_piece:
                     (new_base,
                      displaced_blank_cells,
@@ -469,6 +522,7 @@ class Traversal:
                         board_state,
                         move_info)
                     self.next_board.update_pieces_from_board(self.board)
+        self.winning_states = winning_states
         return winning_states
 
 
@@ -480,6 +534,19 @@ class Direction:
     RIGHT = 1
     DOWN = 2
     LEFT = 3
+
+    keys = (
+        GLUT.GLUT_KEY_UP,
+        GLUT.GLUT_KEY_RIGHT,
+        GLUT.GLUT_KEY_DOWN,
+        GLUT.GLUT_KEY_LEFT)
+
+    direction_by_key = {}
+    key_by_direction = {}
+
+    for i in range(4):
+        direction_by_key[keys[i]] = i
+        key_by_direction[i] = keys[i]
 
     @classmethod
     def opposite(cls, direction):
