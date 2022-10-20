@@ -1,3 +1,5 @@
+import threading
+
 from game_common import (
         graph,
         interfaces,
@@ -14,6 +16,8 @@ from piano import (
 
 @implementer(interfaces.IWorld, interfaces.Observable)
 class PianoWorld(object):
+    animation_transition_time = 1000
+
     def __init__(self):
         self.tile_height = 100
         self.tile_width = 100
@@ -73,11 +77,51 @@ class PianoWorld(object):
 
         self.canvas.render()
         self.state_machine.start()
-        self.traversal.discover_all_winning_states()
+        self.compute_thread = threading.Thread(
+            target=self.traversal.build_map)
+        self.compute_thread.start()
+        # self.traversal.discover_all_winning_states()
         # self.paths = self.traversal.get_all_winning_paths()
         # self.current_path = self.paths[0]
         # self.current_step = -1
         # self.ready_for_next = True
+        
+    def start_animation(self, move):
+        piece_to_move = None
+        if self.selected_piece is None:
+            for piece in self.board.pieces_by_type[move.piece_type]:
+                if move.piece_from == (piece.row, piece.column):
+                    piece_to_move = piece
+                    break
+        else:
+            piece_to_move = self.selected_piece
+
+        if piece_to_move is None:
+            breakpoint()
+
+        self.piece_to_move = piece_to_move
+
+        self.animate_start = self.current_time
+        self.animate_end = self.current_time + self.animation_transition_time
+        direction = move.direction
+        if direction is board.Direction.UP:
+            board_offset = (-1, 0)
+        elif direction is board.Direction.DOWN:
+            board_offset = (1, 0)
+        elif direction is board.Direction.LEFT:
+            board_offset = (0, -1)
+        elif direction is board.Direction.RIGHT:
+            board_offset = (0, 1)
+        visual_move = (
+            board_offset[1] * self.tile_width,
+            -board_offset[0] * self.tile_height)
+        piece_to_move.start_animation(
+            board_offset=board_offset,
+            visual_move=visual_move,
+            animate_start=self.animate_start,
+            animate_end=self.animate_end,
+            transition_time=self.animation_transition_time,
+            move=move)
 
     def handle_mouse_click(self, button, state, x, y):
         if button == 0 and state == 1:
@@ -89,7 +133,7 @@ class PianoWorld(object):
 
 
     def handle_keyboard(self, key, *args, **kwargs):
-        if key == ' ':
+        if key == b' ':
             self.interactive = not self.interactive
 
         if key in (GLUT.GLUT_KEY_UP,
@@ -99,6 +143,18 @@ class PianoWorld(object):
             self.state_machine.current_state.handle_keyboard_direction(
                 owner=self,
                 key=key)
+
+    def initiate_auto_move(self):
+        current_state_string = board.BoardState(self.board).get_state_string()
+        current_state = self.traversal.discovered_states.get(
+            current_state_string)
+        self.path = self.traversal.get_shortest_winning_path(
+            current_state)
+        self.selected_piece = None
+        self.selected_move = None
+        self.piece_to_move = None
+        self.state_machine.change_state(world_states.AutoAnimate)
+        
 
     def update(self,
                current_time):

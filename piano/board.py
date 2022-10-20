@@ -1,3 +1,6 @@
+import collections
+import time
+
 from game_common import (
         interfaces)
 from game_common.twodee.geometry import (
@@ -6,6 +9,15 @@ from game_common.twodee.geometry import (
 from OpenGL import (GL, GLUT)
 import zope.interface
 
+Move = collections.namedtuple(
+    'Move',
+    ['piece_type',
+     'piece_from',
+     'piece_to',
+     'displaced_blank_cells',
+     'displaced_blanks',
+     'new_blank_cells',
+     'direction'])
 
 class Board:
     def __init__(self, pieces_by_type):
@@ -30,15 +42,19 @@ class Board:
     def finish_move(self):
         self.moves_by_piece = None
 
+    def get_piece(self, piece_type, piece_base):
+        for piece in self.pieces_by_type[piece_type]:
+            if (piece.row, piece.column) == piece_base:
+                return piece
+
+        return None
+        
     def update_blanks_from_move(self, move):
-        (_,
-         _,
-         displaced_blanks,
-         new_blank_cells,
-         _) = move
-        for blank_index in range(len(displaced_blanks)):
-            blank = displaced_blanks[blank_index]
-            blank.row, blank.column = new_blank_cells[blank_index]
+        for blank_index in range(len(move.displaced_blank_cells)):
+            blank = self.get_piece(
+                'blank',
+                move.displaced_blank_cells[blank_index])
+            blank.row, blank.column = move.new_blank_cells[blank_index]
             blank.update_position_from_grid()
 
     @classmethod
@@ -155,12 +171,14 @@ class BoardPiece:
                 return False
         new_blanks = [(self.row + (self.height - 1), self.column + x) for x in range(self.width)]
         new_base = (self.row - 1, self.column)
-        return (
-            new_base,
-            up_row,
-            matched_blanks,
-            new_blanks,
-            Direction.UP)
+        return Move(
+            piece_type=self.piece_type,
+            piece_from=(self.row, self.column),
+            piece_to=new_base,
+            displaced_blank_cells=up_row,
+            displaced_blanks=matched_blanks,
+            new_blank_cells=new_blanks,
+            direction=Direction.UP)
 
     def check_down(self, blanks, blank_cells):
         if self.row + self.height > 4:
@@ -174,12 +192,14 @@ class BoardPiece:
                 return False
         new_blanks = [(self.row, self.column + x) for x in range(self.width)]
         new_base = (self.row + 1, self.column)
-        return (
-            new_base,
-            down_row,
-            matched_blanks,
-            new_blanks,
-            Direction.DOWN)
+        return Move(
+            piece_type=self.piece_type,
+            piece_from=(self.row, self.column),
+            piece_to=new_base,
+            displaced_blank_cells=down_row,
+            displaced_blanks=matched_blanks,
+            new_blank_cells=new_blanks,
+            direction=Direction.DOWN)
 
     def check_left(self, blanks, blank_cells):
         if self.column - 1 < 0:
@@ -193,12 +213,14 @@ class BoardPiece:
                 return False
         new_blanks = [(self.row + x, self.column + (self.width - 1)) for x in range(self.height)]
         new_base = (self.row, self.column - 1)
-        return (
-            new_base,
-            left_column,
-            matched_blanks,
-            new_blanks,
-            Direction.LEFT)
+        return Move(
+            piece_type=self.piece_type,
+            piece_from=(self.row, self.column),
+            piece_to=new_base,
+            displaced_blank_cells=left_column,
+            displaced_blanks=matched_blanks,
+            new_blank_cells=new_blanks,
+            direction=Direction.LEFT)
 
     def check_right(self, blanks, blank_cells):
         if self.column + self.width > 3:
@@ -214,12 +236,14 @@ class BoardPiece:
         new_blanks = [(self.row + x, self.column) for x in range(self.height)]
         new_base = (self.row, self.column + 1)
 
-        return (
-            new_base,
-            right_column,
-            matched_blanks,
-            new_blanks,
-            Direction.RIGHT)
+        return Move(
+            piece_type=self.piece_type,
+            piece_from=(self.row, self.column),
+            piece_to=new_base,
+            displaced_blank_cells=right_column,
+            displaced_blanks=matched_blanks,
+            new_blank_cells=new_blanks,
+            direction=Direction.RIGHT)
 
     def _get_blank_by_cell(self, cell, blanks):
         for blank in blanks:
@@ -281,26 +305,27 @@ class BoardPiece:
 
     def start_animation(
             self,
-            move,
+            board_offset,
             visual_move,
             animate_start,
             animate_end,
             transition_time,
-            move_data):
-        self.move = move
+            move):
+        self.board_offset = board_offset
         self.visual_move = visual_move
         self.animation_start_position = self.position
         self.animate_start = animate_start
         self.animate_end = animate_end
         self.transition_time = transition_time
-        self.move_data = move_data
+        self.move = move
 
     def end_animation(self):
-        self.row += self.move[0]
-        self.column += self.move[1]
-        self.board.update_blanks_from_move(self.move_data)
+        self.row += self.board_offset[0]
+        self.column += self.board_offset[1]
+        self.board.update_blanks_from_move(self.move)
         self.board.finish_move()
         self.animation_start_position = None
+        self.board_offset = None
         self.move = None
         self.visual_move = None
         self.animate_start = None
@@ -384,6 +409,7 @@ class BoardState:
         self.state_string = self.get_state_string()
         self.adjacent_states = {}
         self.move = move
+        self.moves_from_winning_states = []
 
     def initialize_rows(self):
         self.rows = [
@@ -418,16 +444,15 @@ class BoardState:
         other_state.adjacent_states[self.state_string] = (self, backward)
 
 
-def reverse_move_info(move_info):
-    (piece_type,
-     piece_from,
-     piece_to,
-     direction) = move_info
-    backward = (
-        piece_type,
-        piece_to,
-        piece_from,
-        Direction.opposite(direction))
+def reverse_move_info(move):
+    backward = Move(
+        piece_type=move.piece_type,
+        piece_from=move.piece_to,
+        piece_to=move.piece_from,
+        displaced_blank_cells=move.new_blank_cells,
+        new_blank_cells=move.displaced_blank_cells,
+        displaced_blanks=move.displaced_blanks,
+        direction=Direction.opposite(move.direction))
     return backward
 
         
@@ -439,8 +464,29 @@ class Traversal:
         self.starting_state = BoardState(board=board)
         self.discovered_states = {
             self.starting_state.state_string: self.starting_state}
-        self.state_queue = [self.starting_state]
         self.current_state = None
+
+
+    def get_shortest_winning_path(self, current_state):
+        path_index = 0
+        current_min = current_state.moves_from_winning_states[0]
+        for i in range(len(current_state.moves_from_winning_states[1:])):
+            moves = current_state.moves_from_winning_states[i]
+            if moves < current_min:
+                path_index = i
+                current_min = moves
+
+        moves = current_min
+
+        while moves > 0:
+            adjacent_states = current_state.adjacent_states
+            for (adjacent_state, move) in adjacent_states.values():
+                if adjacent_state.moves_from_winning_states[path_index] < moves:
+                    current_state = adjacent_state
+                    yield (current_state, move)
+                    moves = current_state.moves_from_winning_states[path_index]
+                    break
+
 
     def get_all_winning_paths(self, starting_state=None):
         if starting_state is None:
@@ -470,34 +516,53 @@ class Traversal:
             paths.append(path)
         return paths
 
+    def build_map(self):
+        print('Discovering winning states')
+        winning_states = self.discover_all_winning_states()
+        print('Winning states disccovered')
+        path_index = 0
+        for winning_state in winning_states:
+            print('Mapping path {}'.format(path_index))
+            moves = 0
+            state_queue = [winning_state]
+            mapped_states = {winning_state}
+            winning_state.moves_from_winning_states.append(0)
+            while state_queue:
+                current_state = state_queue.pop(0)
+                move_number =\
+                    current_state.moves_from_winning_states[path_index] + 1
+                adjacent_states = current_state.adjacent_states
+                for (adjacent_state, _) in adjacent_states.values():
+                    if adjacent_state in mapped_states:
+                        continue
+                    mapped_states.add(adjacent_state)
+                    adjacent_state.moves_from_winning_states.append(move_number)
+                    state_queue.append(adjacent_state)
+            print('Finished map for path {}'.format(path_index))
+            path_index += 1
+
     def discover_all_winning_states(self):
         count = 0
         winning_states = []
-        while self.state_queue:
+        state_queue = [self.starting_state]
+        while state_queue:
             count += 1
-            self.current_state = self.state_queue.pop(0)
+            self.current_state = state_queue.pop(0)
             self.board.update_pieces_from_state(self.current_state)
             self.next_board.update_pieces_from_board(self.board)
             piano = self.board.piano
             if (piano.row, piano.column) == (3, 1):
                 winning_states.append(self.current_state)
-                self.current_state.print_self()
                 continue
 
             moves_by_piece = self.next_board.find_moves()
             for (piece, moves_for_piece) in moves_by_piece.items():
                 for move in moves_for_piece:
-                    (new_base,
-                     displaced_blank_cells,
-                     displaced_blanks,
-                     new_blank_cells,
-                     direction) = move
-                    piece_from = (piece.row, piece.column)
-                    piece_to = new_base
-                    piece.row, piece.column = new_base
-                    for blank_index in range(len(displaced_blanks)):
-                        blank = displaced_blanks[blank_index]
-                        blank.row, blank.column = new_blank_cells[blank_index]
+                    piece.row, piece.column = move.piece_to
+                    for blank_index in range(len(move.displaced_blanks)):
+                        blank = move.displaced_blanks[blank_index]
+                        (blank.row,
+                         blank.column) = move.new_blank_cells[blank_index]
                     board_state_candidate =\
                         BoardState(
                             board=self.next_board,
@@ -511,17 +576,13 @@ class Traversal:
                         board_state = board_state_candidate
                         self.discovered_states[board_state.state_string] =\
                             board_state
-                        self.state_queue.append(board_state)
+                        state_queue.append(board_state)
 
-                    move_info = (
-                        piece.piece_type,
-                        piece_from,
-                        piece_to,
-                        direction)
                     self.current_state.connect(
                         board_state,
-                        move_info)
+                        move)
                     self.next_board.update_pieces_from_board(self.board)
+            time.sleep(.00001)
         self.winning_states = winning_states
         return winning_states
 
