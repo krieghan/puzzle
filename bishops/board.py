@@ -1,5 +1,6 @@
 import collections
 import copy
+import math
 import time
 
 from game_common import (
@@ -18,12 +19,11 @@ Move = collections.namedtuple(
      'direction'])
 
 class Board:
-    def __init__(self, pieces_by_type):
+    def __init__(self, pieces_by_type, world):
         self.pieces_by_type = pieces_by_type
         self.pieces = []
         self.moves_by_piece = None
-        self.height = 4
-        self.width = 5
+        self.world = world
         for piece_type, pieces_for_type in pieces_by_type.items():
             for piece in pieces_for_type:
                 piece.set_board(self)
@@ -33,7 +33,7 @@ class Board:
         pieces_by_type = {
             key: [x.copy() for x in value] 
             for (key, value) in self.pieces_by_type.items()}
-        return Board(pieces_by_type)
+        return Board(pieces_by_type, world=self.world)
 
     def finish_move(self):
         self.moves_by_piece = None
@@ -46,7 +46,7 @@ class Board:
         return None
         
     @classmethod
-    def from_initial_state(cls):
+    def from_initial_state(cls, world):
         white_bishops = [
             create_white_bishop(0, 4),
             create_white_bishop(1, 4),
@@ -65,18 +65,26 @@ class Board:
             'white': white_bishops,
             'red': red_bishops
         }
-        return Board(pieces_by_type)
+        return Board(pieces_by_type, world=world)
 
-    def select_game_piece(self, x, y, piece_type='pieces'):
-        if piece_type == 'pieces':
-            pieces = self.pieces
-        for piece in pieces:
-            if intersect.point_in_rectangle(
-                    (x, y),
-                    piece.get_display_vertices()):
+    def get_cell_by_position(self, x, y):
+        column_number = int(x / self.world.tile_width)
+        row_number = int((self.world.height - y) / self.world.tile_height)
+        return row_number, column_number
+
+    def get_piece_by_indices(self, row_number, column_number):
+        current_state = BoardState(self)
+        for piece in self.pieces:
+            if piece.row == row_number and piece.column == column_number:
                 return piece
 
-    def find_moves(self, current_state):
+    def select_game_piece(self, x, y):
+        row_number, column_number = self.get_cell_by_position(x, y)
+        return self.get_piece_by_indices(row_number, column_number)
+
+    def find_moves(self, current_state=None):
+        if current_state is None:
+            current_state = BoardState(self)
         if self.moves_by_piece is None:
             moves_by_piece = self.moves_by_piece = {}
             for piece in self.pieces:
@@ -150,9 +158,9 @@ class BoardPiece:
                 current_row = self.row
                 current_column = self.column
                 while (current_row >= 0 and 
-                       current_row < self.board.height and
+                       current_row < self.board.world.height_tiles and
                        current_column >= 0 and 
-                       current_column < self.board.width):
+                       current_column < self.board.world.width_tiles):
                     space = checks[current_row][current_column]
                     if space == ' ':
                         moves.append(
@@ -202,7 +210,9 @@ class BoardPiece:
 
     def update_position_from_grid(self):
         x = self.column * self.cell_width + (self.renderable_width / 2)
-        y = self.board_height - (self.row * self.cell_height + (self.renderable_height / 2))
+        y = self.board_height - (
+            self.row * self.cell_height + (self.renderable_height / 2)
+        )
         self.position = (x, y)
 
     def start_animation(
@@ -273,13 +283,24 @@ class BoardPiece:
         GL.glPushMatrix()
         GL.glTranslate(x, y, 0)
         GL.glColor3f(*color)
-        GL.glBegin(GL.GL_POLYGON)
-
-        for vertex in display_vertices:
-            GL.glVertex2f(*vertex)
-
-        GL.glEnd()
+        half_width, half_height = self.get_display_dimensions()
+        draw_circle(radius=half_width, number_of_triangles=20)
         GL.glPopMatrix()
+
+
+def draw_circle(radius, number_of_triangles):
+    GL.glBegin(GL.GL_TRIANGLE_FAN)
+    twice_pi = 2.0 * math.pi
+    GL.glVertex2f(0, 0)
+
+    for i in range(number_of_triangles + 1):
+        GL.glVertex2f(
+            radius * math.cos(i * twice_pi / number_of_triangles),
+            radius * math.sin(i * twice_pi / number_of_triangles))
+    GL.glEnd()
+
+
+
 
 
 def create_white_bishop(row, column):
@@ -329,6 +350,14 @@ class BoardState:
                         scan_column += column_offset
 
         return checks
+
+    def get_checks_for_piece(self, piece):
+        if piece.piece_type == 'red':
+            return self.red_checks
+        elif piece.piece_type == 'white':
+            return self.white_checks
+        else:
+            raise NotImplementedError()
 
     def is_winning(self):
         return self.rows == [
@@ -385,8 +414,8 @@ def reverse_move_info(move):
 
         
 class Traversal:
-    def __init__(self):
-        board = Board.from_initial_state()
+    def __init__(self, world):
+        board = Board.from_initial_state(world=world)
         self.board = board
         self.next_board = board.copy()
         self.starting_state = BoardState(board=board)

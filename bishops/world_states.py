@@ -5,7 +5,9 @@ from zope.interface import (
     verify)
 
 from bishops import (
-    board)
+    board
+)
+
 
 class BishopsState(object):
     @classmethod
@@ -39,7 +41,11 @@ class WaitForPieceSelection(BishopsState):
     def handle_click(cls, owner, x, y):
         piece = owner.board.select_game_piece(x, y)
         if piece is not None:
-            breakpoint()
+            current_state_string =\
+                board.BoardState(owner.board).get_state_string()
+            current_state = owner.traversal.discovered_states.get(
+                current_state_string
+            )
             moves = owner.board.find_moves().get(piece)
             if moves is None or len(moves) == 0:
                 return
@@ -55,7 +61,8 @@ class WaitForPieceSelection(BishopsState):
             elif len(moves) > 1:
                 owner.selected_piece = piece
                 owner.state_machine.change_state(
-                    WaitForMoveSelection)
+                    WaitForMoveSelection
+                )
                 return
 
 
@@ -80,25 +87,17 @@ class WaitForMoveSelection(BishopsState):
 
     @classmethod
     def handle_click(cls, owner, x, y):
-        blank = owner.board.select_game_piece(
-            x,
-            y,
-            piece_type='blanks')
-        if blank is not None:
-            moves = owner.board.find_moves().get(owner.selected_piece)
-            for move in moves:
-                if blank in move.displaced_blanks:
-                    owner.selected_move = move
-                    owner.state_machine.change_state(
-                        AnimateUserMove)
-                    return
-        else:
-            piece = owner.board.select_game_piece(
-                x,
-                y)
-            if piece is owner.selected_piece:
+        row, column = owner.board.get_cell_by_position(x, y)
+        state = board.BoardState(owner.board)
+        moves = owner.board.find_moves(state).get(owner.selected_piece)
+        for move in moves:
+            if move.piece_to == (row, column):
+                owner.selected_move = move
                 owner.state_machine.change_state(
-                    WaitForPieceSelection)
+                    AnimateUserMove
+                )
+                return
+        owner.state_machine.change_state(WaitForPieceSelection)
 
     @classmethod
     def handle_keyboard_direction(cls, owner, key):

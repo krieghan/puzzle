@@ -32,7 +32,7 @@ class BishopsWorld(object):
         self.max_top = self.height
         self.interactive = True
 
-        self.traversal = board.Traversal()
+        self.traversal = board.Traversal(world=self)
         self.canvasElements = set()
 
         self.current_time = 0
@@ -73,7 +73,7 @@ class BishopsWorld(object):
         GLUT.glutMouseFunc(self.handle_mouse_click)
         GLUT.glutKeyboardFunc(self.handle_keyboard)
         GLUT.glutSpecialUpFunc(self.handle_keyboard)
-        self.board = board.Board.from_initial_state()
+        self.board = board.Board.from_initial_state(world=self)
         for piece in self.board.pieces:
             piece.init_renderable()
             self.add_canvas_element(piece)
@@ -150,9 +150,11 @@ class BishopsWorld(object):
     def initiate_auto_move(self):
         current_state_string = board.BoardState(self.board).get_state_string()
         current_state = self.traversal.discovered_states.get(
-            current_state_string)
+            current_state_string
+        )
         self.path = self.traversal.get_shortest_winning_path(
-            current_state)
+            current_state
+        )
         self.selected_piece = None
         self.selected_move = None
         self.piece_to_move = None
