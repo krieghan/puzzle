@@ -155,8 +155,8 @@ class BoardPiece:
         moves = []
         for row_offset in (-1, 1):
             for column_offset in (-1, 1):
-                current_row = self.row
-                current_column = self.column
+                current_row = self.row + row_offset
+                current_column = self.column + column_offset
                 while (current_row >= 0 and 
                        current_row < self.board.world.height_tiles and
                        current_column >= 0 and 
@@ -174,6 +174,10 @@ class BoardPiece:
                                 )
                             )
                         )
+                    elif space != 'C':
+                        # If another piece is in this space, the rest
+                        # of the diagonal is blocked for this piece.
+                        break
 
                     current_row += row_offset
                     current_column += column_offset
@@ -344,7 +348,7 @@ class BoardState:
                     scan_column = piece_column
                     while (scan_row >= 0 and scan_row < board_height and
                            scan_column >= 0 and scan_column < board_width):
-                        if self.rows[scan_row][scan_column] != symbol:
+                        if self.rows[scan_row][scan_column] == ' ':
                             checks[scan_row][scan_column] = 'C'
                         scan_row += row_offset
                         scan_column += column_offset
